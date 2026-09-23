@@ -1,11 +1,23 @@
 import type { AnthropicRequest, GeminiContent, GeminiRequest, AnthropicMessage } from "./types.js";
 
-function blockText(content: AnthropicMessage["content"]): string {
-  if (typeof content === "string") return content;
-  return content
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("");
+function blockText(content: any): string {
+  if (typeof content === "string") return content || "(empty)";
+  if (!Array.isArray(content)) return String(content ?? "") || "(empty)";
+  const texts = content
+    .map((b) => {
+      if (!b) return "";
+      if (b.type === "text") return b.text;
+      if (b.type === "tool_result") {
+        const inner = typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? "");
+        return `[Tool result]: ${inner}`;
+      }
+      if (b.type === "tool_use") {
+        return `[Tool call: ${b.name}]`;
+      }
+      return "";
+    })
+    .filter(Boolean);
+  return texts.join("\n") || "(empty)";
 }
 
 function systemText(system: AnthropicRequest["system"]): string | undefined {

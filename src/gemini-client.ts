@@ -38,3 +38,20 @@ export async function streamGenerateContent(body: GeminiRequest): Promise<Respon
   }
   return res;
 }
+
+export async function countTokens(body: GeminiRequest): Promise<number> {
+  try {
+    const res = await fetch(`${BASE}/${model()}:countTokens?key=${apiKey()}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contents: body.contents }),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { totalTokens?: number };
+      if (typeof data.totalTokens === "number") return data.totalTokens;
+    }
+  } catch {}
+  const chars = body.contents.reduce((sum, c) => sum + c.parts.reduce((s, p) => s + (p.text?.length || 0), 0), 0);
+  return Math.max(1, Math.ceil(chars / 4));
+}
+
