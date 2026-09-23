@@ -14,6 +14,17 @@ function model(): string {
   return m;
 }
 
+function fallbackModels(): string[] {
+  const primary = model();
+  const candidates = [
+    primary,
+    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+  ];
+  return Array.from(new Set(candidates));
+}
+
 export class GeminiApiError extends Error {
   status: number;
   data: string;
@@ -25,61 +36,87 @@ export class GeminiApiError extends Error {
   }
 }
 
-async function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+export async function generateContent(body: GeminiRequest): Promise<GeminiResponse> {
+  const models = fallbackModels();
+  let lastError: Error | null = null;
 
-export async function generateContent(body: GeminiRequest, retries = 2): Promise<GeminiResponse> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(`${BASE}/${model()}:generateContent?key=${apiKey()}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (res.ok) return (await res.json()) as GeminiResponse;
-    const text = await res.text();
-    if ((res.status === 429 || res.status === 503) && attempt < retries) {
-      console.log(`[GEMINI RETRY] Status ${res.status}, retrying in ${(attempt + 1) * 2}s...`);
-      await sleep((attempt + 1) * 2000);
-      continue;
+  for (const m of models) {
+    try {
+      const res = await fetch(`${BASE}/${m}:generateContent?key=${apiKey()}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        if (m !== models[0]) console.log(`[GEMINI FALLBACK] Responded using ${m}`);
+        return (await res.json()) as GeminiResponse;
+      }
+      const text = await res.text();
+      if (res.status === 429 || res.status === 503) {
+        console.warn(`[GEMINI 429] Model ${m} rate-limited. Trying fallback...`);
+        lastError = new GeminiApiError(res.status, text);
+        continue;
+      }
+      throw new GeminiApiError(res.status, text);
+    } catch (e) {
+      if (e instanceof GeminiApiError && (e.status === 429 || e.status === 503)) {
+        lastError = e;
+        continue;
+      }
+      throw e;
     }
-    throw new GeminiApiError(res.status, text);
   }
-  throw new Error("Failed after retries");
+  throw lastError || new Error("All model fallbacks exhausted");
 }
 
 /** Returns the raw fetch Response for the SSE stream; caller reads res.body. */
-export async function streamGenerateContent(body: GeminiRequest, retries = 2): Promise<Response> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(`${BASE}/${model()}:streamGenerateContent?alt=sse&key=${apiKey()}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (res.ok && res.body) return res;
-    const text = await res.text();
-    if ((res.status === 429 || res.status === 503) && attempt < retries) {
-      console.log(`[GEMINI RETRY] Status ${res.status}, retrying stream in ${(attempt + 1) * 2}s...`);
-      await sleep((attempt + 1) * 2000);
-      continue;
+export async function streamGenerateContent(body: GeminiRequest): Promise<Response> {
+  const models = fallbackModels();
+  let lastError: Error | null = null;
+
+  for (const m of models) {
+    try {
+      const res = await fetch(`${BASE}/${m}:streamGenerateContent?alt=sse&key=${apiKey()}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok && res.body) {
+        if (m !== models[0]) console.log(`[GEMINI FALLBACK] Streaming using ${m}`);
+        return res;
+      }
+      const text = await res.text();
+      if (res.status === 429 || res.status === 503) {
+        console.warn(`[GEMINI 429] Model ${m} rate-limited. Trying fallback...`);
+        lastError = new GeminiApiError(res.status, text);
+        continue;
+      }
+      throw new GeminiApiError(res.status, text);
+    } catch (e) {
+      if (e instanceof GeminiApiError && (e.status === 429 || e.status === 503)) {
+        lastError = e;
+        continue;
+      }
+      throw e;
     }
-    throw new GeminiApiError(res.status, text);
   }
-  throw new Error("Failed after retries");
+  throw lastError || new Error("All model fallbacks exhausted");
 }
 
 export async function countTokens(body: GeminiRequest): Promise<number> {
-  try {
-    const res = await fetch(`${BASE}/${model()}:countTokens?key=${apiKey()}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ contents: body.contents }),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as { totalTokens?: number };
-      if (typeof data.totalTokens === "number") return data.totalTokens;
-    }
-  } catch {}
+  for (const m of fallbackModels()) {
+    try {
+      const res = await fetch(`${BASE}/${m}:countTokens?key=${apiKey()}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ contents: body.contents }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { totalTokens?: number };
+        if (typeof data.totalTokens === "number") return data.totalTokens;
+      }
+    } catch {}
+  }
   const chars = body.contents.reduce((sum, c) => sum + c.parts.reduce((s, p) => s + (p.text?.length || 0), 0), 0);
   return Math.max(1, Math.ceil(chars / 4));
 }
