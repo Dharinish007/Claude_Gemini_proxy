@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AnthropicRequest } from "./types.js";
 import { toGeminiRequest } from "./translate-request.js";
 import { toAnthropicResponse } from "./translate-response.js";
-import { generateContent, streamGenerateContent, countTokens } from "./gemini-client.js";
+import { generateContent, streamGenerateContent, countTokens, GeminiApiError } from "./gemini-client.js";
 import { pipeGeminiStreamToAnthropic } from "./stream.js";
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -19,7 +19,7 @@ function sendError(res: ServerResponse, status: number, message: string) {
     "content-type": "application/json",
     "access-control-allow-origin": "*",
   });
-  res.end(JSON.stringify({ type: "error", error: { type: "api_error", message } }));
+  res.end(JSON.stringify({ type: "error", error: { type: status === 429 ? "rate_limit_error" : "api_error", message } }));
 }
 
 async function handleMessages(req: IncomingMessage, res: ServerResponse) {
@@ -60,6 +60,26 @@ async function handleMessages(req: IncomingMessage, res: ServerResponse) {
       res.end(JSON.stringify(anthropicRes));
     }
   } catch (err) {
+    if (err instanceof GeminiApiError) {
+      const isRateLimit = err.status === 429;
+      if (!res.headersSent) {
+        res.writeHead(err.status, {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          ...(isRateLimit ? { "retry-after": "5" } : {}),
+        });
+        res.end(
+          JSON.stringify({
+            type: "error",
+            error: {
+              type: isRateLimit ? "rate_limit_error" : "api_error",
+              message: err.message,
+            },
+          })
+        );
+        return;
+      }
+    }
     const message = err instanceof Error ? err.message : "Unknown error";
     if (!res.headersSent) sendError(res, 502, message);
     else res.end();
